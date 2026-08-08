@@ -1,4 +1,4 @@
-from fastapi import FastAPI,Depends,HTTPException,Header,UploadFile,File,Request
+from fastapi import FastAPI,Depends,HTTPException,Header,UploadFile,File,Request,status
 import os
 from fastapi.staticfiles import StaticFiles
 import shutil
@@ -6,7 +6,7 @@ from database import session,engine
 from sqlalchemy.orm import Session
 import dbmodel
 from todo import Todo
-from register import User,UserResponse
+from register import User,UserResponse,RequestRefreshToken
 from jose import jwt,JWTError
 from datetime import datetime, timedelta
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
@@ -25,7 +25,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from fastapi.responses import JSONResponse
-
+import uvicorn
 FILEURL = "http://127.0.0.1:8000/files/"
 # Define allowed extensions and MIME types
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "pdf"}
@@ -57,9 +57,10 @@ def my_db():
 Cache_data = []
 last_fetch = 0        
 # JWT Config
-SECRET_KEY = settings.SECRET_KEY  # Use os.getenv("SECRET_KEY")
+SECRET_KEY = settings.SECRET_KEY  
 ALGORITHM =  settings.ALGORITHM
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
+REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 # password hashing setup
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -81,31 +82,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     prepared_pwd = base64.b64encode(digest)
     
     return bcrypt.checkpw(prepared_pwd, hashed_password.encode('utf-8'))
-# def get_password_hash(password: str) -> str:
-#     """Hash a password with bcrypt, truncating if necessary."""
-#     # Convert to bytes and truncate to 72 bytes
-#     password_bytes = password.encode('utf-8')
-#     if len(password_bytes) > 72:
-#         password = password_bytes[:72].decode('utf-8', errors='ignore')
-#     return pwd_context.hash(password)
-
-# def verify_password(plain_password: str, hashed_password: str) -> bool:
-#     """Verify a password against a hash, truncating if necessary."""
-#     # Truncate the plain password the same way
-#     password_bytes = plain_password.encode('utf-8')
-#     if len(password_bytes) > 72:
-#         plain_password = password_bytes[:72].decode('utf-8', errors='ignore')
-#     return pwd_context.verify(plain_password, hashed_password)
-
-# Usage
-# password = "1234"  # Your actual password
-# print("password=",password) 
-# hashed = get_password_hash(password)
-# print("hashed=",hashed) 
-
-# print(verify_password(password, hashed)) 
-# Oauth setup
-# oath2_schema = OAuth2PasswordBearer(tokenUrl="login")
 
 # Rate limiter logic
 limiter = Limiter(key_func=get_remote_address)
@@ -145,10 +121,16 @@ def create_token(data:dict):
         to_encode = data.copy()
         expiry = datetime.now() + timedelta(minutes=30)
         to_encode.update({
-                "exp" : expiry
+                "exp" : expiry,
+                "type":"access"
             })
         token = jwt.encode(to_encode,SECRET_KEY,algorithm=ALGORITHM)
         return token
+def create_refresh_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.now() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode.update({"exp": expire, "type": "refresh"})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)    
 # verify auth2 token
 def verify_OAuth_token(token:str= Depends(oath2_schema)):  
     try:
@@ -303,14 +285,47 @@ def login_auth(request_form:OAuth2PasswordRequestForm = Depends(),db:Session = D
        
         if not user or not verify_password(request_form.password,user.password):
             raise HTTPException(
-            status_code=400,
+            status_code=401,
             detail="Invalid user name or password"
                                 )
         access_token = create_token({"sub":request_form.username})  
+        refresh_token = create_refresh_token({"sub":request_form.username})
         return{
             "access_token":access_token,
-              "token_type":"bearer"
-        }      
+            "refresh_token":refresh_token,
+            "token_type":"bearer"
+        }     
+#Refresh token
+@app.post('/refresh')
+def refresh_token(token:RequestRefreshToken):
+    try:
+        payload = jwt.decode(token.refreshtoken,SECRET_KEY,algorithms=[ALGORITHM])
+        if payload.get('type') != 'refresh':
+            raise HTTPException(
+                status_code=401,
+                detail="Inalid token type"
+            )
+        username:str = payload.get('sub')
+        if username is None:
+            raise HTTPException(
+                status_code=401,
+                detail='Invaid user'
+            )
+        access_token = create_token({"sub":username})  
+        refresh_token = create_refresh_token({"sub":username})
+        return{
+            "access_token":access_token,
+            "refresh_token":refresh_token,
+            "token_type":"bearer"
+        }        
+    except Exception as e:
+        raise HTTPException(
+            status_code=401,
+            detail="Error while generation of refresh token"
+        ) 
+    
+    
+             
 @app.post('/login')
 def login(user:LoginAuth):
     auth_user = authenticate_user(username=user.username,password=user.password)
@@ -343,7 +358,7 @@ def dashboard(username = Depends(verify_OAuth_token)):
 
 @app.get("/todos") 
 def get_todo(db:Session = Depends(my_db), user = Depends(verify_OAuth_token)):
-    # user_id = user.get('user_id')
+  
     try:
             login_user = db.query(dbmodel.User).filter(dbmodel.User.email == user).first()
             todos = db.query(dbmodel.Todo).filter(dbmodel.Todo.user_id == login_user.id).all()
@@ -386,9 +401,21 @@ def create(todo:Todo,db:Session = Depends(my_db), user = Depends(verify_OAuth_to
             )    
     
 @app.put("/todo/{id}")
-def update(id:int,todo:Todo,db:Session = Depends(my_db)):
+def update(id:int,todo:Todo,db:Session = Depends(my_db),user:str = Depends(verify_OAuth_token)):
     try:
-        dbtodo = db.query(dbmodel.Todo).filter(dbmodel.Todo.id == id ).first()
+        if user is None:
+            raise HTTPException(
+                status_code=401,
+                detail=f"Invalid user authentication"
+            ) 
+        login_user = db.query(dbmodel.User).filter(dbmodel.User.email == user).filter()
+        if login_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"User with email {user_email} not found"
+            )
+        dbtodo =  db.query(dbmodel.Todo).filter(dbmodel.Todo.user_id == login_user.id,dbmodel.Todo.id == id ).first()
+      
         if dbtodo is None:
             raise HTTPException(
                 status_code=404,
@@ -415,8 +442,13 @@ def update(id:int,todo:Todo,db:Session = Depends(my_db)):
          )  
 
 @app.get("/todo/{id}")
-def getTodo(id:int,db:Session = Depends(my_db)):
+def getTodo(id:int,db:Session = Depends(my_db),user:str = Depends(verify_OAuth_token)):
     try:
+        if user is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No todo found for this id:{id}"
+            ) 
         dbtodo = db.query(dbmodel.Todo).filter(dbmodel.Todo.id == id ).first()
         if dbtodo is None:
             raise HTTPException(
@@ -439,8 +471,13 @@ def getTodo(id:int,db:Session = Depends(my_db)):
          )  
 
 @app.delete('/delete/{id}')    
-def deletetodo(id:int,db:Session = Depends(my_db)):
+def deletetodo(id:int,db:Session = Depends(my_db),user:str = Depends(verify_OAuth_token)):
     try:
+        if user is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No todo found for this id:{id}"
+            ) 
         dbTodo = db.query(dbmodel.Todo).filter(dbmodel.Todo.id == id).first()
         if dbTodo is None:
              raise HTTPException(
@@ -533,3 +570,8 @@ def get_cached_news(page:int=1,limit:int=5):
             "time taken":time_taken,
             "data":Cache_data
         }    
+
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+        

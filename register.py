@@ -19,4 +19,5 @@ class UserResponse(BaseModel):
     email:str
     mobileno:str   
     
-    
+class RequestRefreshToken(BaseModel) :
+    refreshtoken:str   
