@@ -1,4 +1,4 @@
-from fastapi import FastAPI,Depends,HTTPException,Header,UploadFile,File,Request,status
+from fastapi import FastAPI,Depends,HTTPException,Header,UploadFile,File,Request,status,APIRouter
 import os
 from fastapi.staticfiles import StaticFiles
 import shutil
@@ -26,13 +26,16 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from fastapi.responses import JSONResponse
 import uvicorn
+from database import session
 FILEURL = "http://127.0.0.1:8000/files/"
 # Define allowed extensions and MIME types
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "pdf"}
 ALLOWED_MIME_TYPES = {"image/png", "image/jpeg", "application/pdf"}
 app = FastAPI()
 dbmodel.Base.metadata.create_all(bind=engine)
-
+# Version 1 routes
+v1_router = APIRouter(prefix="/api/v1", tags=["v1"])
+app.include_router(v1_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -41,7 +44,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-UPLOAD_DIR ="uploads"
+UPLOAD_DIR = "uploads"
 if not os.path.exists(UPLOAD_DIR):
     os.makedirs(UPLOAD_DIR)
     
@@ -64,6 +67,15 @@ REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 # password hashing setup
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+def get_user_from_request(request: Request):
+    """Get user from request.state"""
+    user = getattr(request.state, "user", None)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not authenticated"
+        )
+    return user
 def get_password_hash(password: str) -> str:
     """Pre-hash with SHA-256 to bypass the 72-byte limit, then hash with bcrypt."""
     # Step 1: Pre-hash with SHA-256 (produces 32 raw bytes)
@@ -98,7 +110,7 @@ def rate_limiter_handler(request:Request,exc:RateLimitExceeded):
     )
 
 
-oath2_schema = OAuth2PasswordBearer(tokenUrl="loginauth")
+oath2_schema = OAuth2PasswordBearer(tokenUrl="api/v1/loginauth")
 
 # hash password
 def hash_password(password:str):
@@ -184,6 +196,115 @@ def verify_token(token: str = Header(...)):
             status_code=401,
             detail="Invalid or expired token"
         )
+# @app.middleware('http') 
+# Middleware 1: Logging
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    print(f"📝 [Log Middleware] - Before request: {request.method} {request.url.path}")
+    start_time = time.time()
+    
+    response = await call_next(request)
+    
+    process_time = time.time() - start_time
+    print(f"📝 [Log Middleware] - After request: {process_time:.3f}s")
+    
+    return response  
+
+@app.middleware('http')     
+async def auth_middleware(
+    request: Request, call_next,
+    
+    ):  
+    print('url_path=', request.url.path)
+          
+    # path = request.url.path.split('/')[2]
+    # MUST return the response
+    public_paths = [ '/', '/api/v1/loginauth', '/api/v1/register' ,'/docs', '/docs/', '/openapi.json',
+        '/redoc',
+        '/redoc/','/static',
+        '/static/',]
+    if request.url.path in public_paths:
+        return await call_next(request)
+    
+    # Get token from Authorization header
+    auth_header = request.headers.get('Authorization')
+    if not auth_header:
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={
+                "detail": "Not authenticated",
+                "error": "Missing Authorization header"
+            },
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    # Validate token format
+    if not auth_header.startswith('Bearer '):
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={
+                "detail": "Invalid authentication scheme",
+                "error": "Use Bearer token"
+            },
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    
+    token = auth_header.split(' ')[1]   
+    # token = auth_header
+    print('token',token)
+    try:
+        # Decode and verify token
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        
+        if username is None:
+            raise JWTError("Invalid token payload")
+        
+        # Check token type (optional)
+        token_type = payload.get("type", "access")
+        if token_type != "access":
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"detail": "Invalid token type. Use access token"},
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+        
+        # Get user from database
+        db = session()
+        user = db.query(dbmodel.User).filter(dbmodel.User.email == username).first()
+        if user is None:
+            raise JWTError("User not found")
+        
+        # if user.disabled:
+        #     return JSONResponse(
+        #         status_code=status.HTTP_403_FORBIDDEN,
+        #         content={"detail": "User account disabled"}
+        #     )
+        
+        # Store user in request state
+        request.state.user_id = user.id
+        request.state.username = username
+        # request.state.token = token
+        # request.state.token_payload = payload
+        response = await call_next(request)
+        return response
+        
+    except JWTError as e:
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": str(e) or "Invalid authentication credentials"},
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": f"Authentication error: {str(e)}"}
+        ) 
+    finally:
+        db.close()    
+          
+
+
 
 #check rate limiter
 @app.get("/ratelimiter") 
@@ -192,9 +313,11 @@ def check_limit(request:Request):
     return{
         "message":"Success"
     } 
-        
+    
+
+            
 #Upload file api
-@app.post('/upload') 
+@v1_router.post('/upload') 
 def upload_file(file:UploadFile = File(...)):
     filename = file.filename
     
@@ -219,7 +342,7 @@ def upload_file(file:UploadFile = File(...)):
             "file_url":f"{FILEURL}{filename}"
         }  
 # get file
-@app.get("/file/{filename}")
+@v1_router.get("/file/{filename}")
 def get_file(filename:str):
     file_path = os.path.join(UPLOAD_DIR,filename)
     if not os.path.exists(file_path):
@@ -228,7 +351,7 @@ def get_file(filename:str):
         "file_url":f"{FILEURL}{filename}"
     }            
 #Register user
-@app.post("/register")  
+@v1_router.post("/register")  
 def register_user(user:User, db:Session = Depends(my_db)):
     try:
         if user is None:
@@ -278,7 +401,7 @@ def register_user(user:User, db:Session = Depends(my_db)):
             detail = f" found some error:{str(e)} while refister user"
         )   
 # Oauth2 login
-@app.post('/loginauth')
+@v1_router.post('/loginauth')
 def login_auth(request_form:OAuth2PasswordRequestForm = Depends(),db:Session = Depends(my_db)):
         # hash_pass = get_password_hash('1234')
         user = db.query(dbmodel.User).filter(dbmodel.User.email == request_form.username).first()
@@ -296,7 +419,7 @@ def login_auth(request_form:OAuth2PasswordRequestForm = Depends(),db:Session = D
             "token_type":"bearer"
         }     
 #Refresh token
-@app.post('/refresh')
+@v1_router.post('/refresh')
 def refresh_token(token:RequestRefreshToken):
     try:
         payload = jwt.decode(token.refreshtoken,SECRET_KEY,algorithms=[ALGORITHM])
@@ -326,7 +449,7 @@ def refresh_token(token:RequestRefreshToken):
     
     
              
-@app.post('/login')
+@v1_router.post('/login')
 def login(user:LoginAuth):
     auth_user = authenticate_user(username=user.username,password=user.password)
     if not user:
@@ -341,13 +464,13 @@ def login(user:LoginAuth):
             "access_token":token
        }
        
-@app.get('/dashboard')
+@v1_router.get('/dashboard')
 def dashboard(user = Depends(verify_token)):
     return {
         "message":"Secure data accessed",
         "user":user
     }
-@app.get('/protected')
+@v1_router.get('/protected')
 def dashboard(username = Depends(verify_OAuth_token)):
     return {
         "message":f"hello {username} , You have successfully accessed protected path",
@@ -356,12 +479,19 @@ def dashboard(username = Depends(verify_OAuth_token)):
    
         
 
-@app.get("/todos") 
-def get_todo(db:Session = Depends(my_db), user = Depends(verify_OAuth_token)):
-  
+@v1_router.get("/todos") 
+def get_todo(
+    request:Request,
+             db:Session = Depends(my_db),
+             user = Depends(verify_OAuth_token),
+             ):
+    print('--------------------')   
     try:
-            login_user = db.query(dbmodel.User).filter(dbmodel.User.email == user).first()
-            todos = db.query(dbmodel.Todo).filter(dbmodel.Todo.user_id == login_user.id).all()
+            print('--',30)   
+            login_userid = request.state.user_id  
+            print('myuser',login_userid)   
+            # login_user = db.query(dbmodel.User).filter(dbmodel.User.email == user).first()
+            todos = db.query(dbmodel.Todo).filter(dbmodel.Todo.user_id == login_userid).all()
             if len(todos) > 0:
                 return {
                     "message": "fetched all todos successfully",
@@ -377,7 +507,7 @@ def get_todo(db:Session = Depends(my_db), user = Depends(verify_OAuth_token)):
                     status_code=400,
                     detail="No data found"
                 )           
-@app.post('/todo')
+@v1_router.post('/todo')
 def create(todo:Todo,db:Session = Depends(my_db), user = Depends(verify_OAuth_token) ):
     try:
         if todo is None:
@@ -400,26 +530,35 @@ def create(todo:Todo,db:Session = Depends(my_db), user = Depends(verify_OAuth_to
                 detail="No data found"
             )    
     
-@app.put("/todo/{id}")
-def update(id:int,todo:Todo,db:Session = Depends(my_db),user:str = Depends(verify_OAuth_token)):
+@v1_router.put("/todo/{todo_id}")
+def update(
+    todo_id:int,
+    todo:Todo,
+    db:Session = Depends(my_db),
+    user = Depends(verify_OAuth_token)
+    ):
     try:
         if user is None:
             raise HTTPException(
                 status_code=401,
                 detail=f"Invalid user authentication"
             ) 
-        login_user = db.query(dbmodel.User).filter(dbmodel.User.email == user).filter()
+        print('email', user)   
+        login_user = db.query(dbmodel.User).filter(dbmodel.User.email == user).first()
         if login_user is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"User with email {user_email} not found"
+                detail=f"User with email {user} not found"
             )
-        dbtodo =  db.query(dbmodel.Todo).filter(dbmodel.Todo.user_id == login_user.id,dbmodel.Todo.id == id ).first()
+            
+        dbtodo =  db.query(dbmodel.Todo).filter(
+            (dbmodel.Todo.user_id == login_user.id) and( dbmodel.Todo.id == todo_id) 
+            ).first()
       
         if dbtodo is None:
             raise HTTPException(
                 status_code=404,
-                detail=f"No todo found for this id:{id}"
+                detail=f"No todo found for this id:{todo_id}"
             )  
            
         else:
@@ -441,7 +580,7 @@ def update(id:int,todo:Todo,db:Session = Depends(my_db),user:str = Depends(verif
              detail= f"failed to update todo: {str(e)}"
          )  
 
-@app.get("/todo/{id}")
+@v1_router.get("/todo/{id}")
 def getTodo(id:int,db:Session = Depends(my_db),user:str = Depends(verify_OAuth_token)):
     try:
         if user is None:
@@ -470,7 +609,7 @@ def getTodo(id:int,db:Session = Depends(my_db),user:str = Depends(verify_OAuth_t
              detail= f"failed to update todo: {str(e)}"
          )  
 
-@app.delete('/delete/{id}')    
+@v1_router.delete('/delete/{id}')    
 def deletetodo(id:int,db:Session = Depends(my_db),user:str = Depends(verify_OAuth_token)):
     try:
         if user is None:
@@ -503,7 +642,7 @@ def deletetodo(id:int,db:Session = Depends(my_db),user:str = Depends(verify_OAut
 
 # web crawling
 
-@app.get("/news")
+@v1_router.get("/news")
 def get_news(page:int=1,limit:int=5):
     global Cache_data,time_left
     url = "https://news.ycombinator.com/"   
@@ -537,7 +676,7 @@ def get_news(page:int=1,limit:int=5):
             "data":title[start:end]
         }  
   
-@app.get("/cachednews")
+@v1_router.get("/cachednews")
 def get_cached_news(page:int=1,limit:int=5):
     global Cache_data,last_fetch
     url = "https://news.ycombinator.com/"   
@@ -572,6 +711,6 @@ def get_cached_news(page:int=1,limit:int=5):
         }    
 
 
-if __name__ == "__main__":
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+# if __name__ == "__main__":
+#     uvicorn.run('main:app', host="127.0.0.1", port=8000, reload=True)
         
