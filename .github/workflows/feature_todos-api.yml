@@ -65,10 +65,11 @@ jobs:
         with:
           name: python-app
       
-      - name: Login to Azure
-        uses: azure/login@v2
+      - name: Azure Login
+        uses: azure/login@v3
         with:
-         client-id: ${{ secrets.AZURE_CLIENT_ID }}
+         auth-type: IDENTITY
+         client-id: ${{ secrets.AZURE_CLIENT_ID }} # Required for user-assigned identity
          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         # client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_E9D68D78E97442D281F3F110AAEEDAA3 }}
