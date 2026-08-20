@@ -51,21 +51,29 @@ jobs:
   # Job 2: Deploy to Azure Web App
   # -------------------------------------------------------------------
  deploy:
-    needs: build
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/feature' && github.event_name == 'push'
+    needs: build
+    permissions:
+      id-token: write #This is required for requesting the JWT
+      contents: read #This is required for actions/checkout
 
     steps:
-      # Download the pre-packaged app from the build job
       - name: Download artifact from build job
         uses: actions/download-artifact@v4
         with:
           name: python-app
-
-      - name: Deploy to Azure Web App
-        uses: azure/webapps-deploy@v3
+      
+      - name: Login to Azure
+        uses: azure/login@v2
         with:
-          app-name: todos-api
-          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-          # Entry point command required for FastAPI
-          startup-command: "gunicorn -w 4 -k uvicorn.workers.UvicornWorker main:app"      
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_E9D68D78E97442D281F3F110AAEEDAA3 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_60155983559D4888B7CE20EC2940B5C9 }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_BE10279745BC49389CAAE882B5D782B0 }}
+
+      - name: 'Deploy to Azure Web App'
+        uses: azure/webapps-deploy@v3
+        id: deploy-to-webapp
+        with:
+          app-name: 'todos-api'
+          slot-name: 'Production'
