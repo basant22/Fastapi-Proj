@@ -13,7 +13,6 @@ last_fetch = 0
 
 @webrouter.get("/news")
 def get_news(page:int=1,limit:int=5):
-    global Cache_data
     url = "https://news.ycombinator.com/"   
     response = requests.get(url)
     soup = BeautifulSoup(response.text,"html.parser")
