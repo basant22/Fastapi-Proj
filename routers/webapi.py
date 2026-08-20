@@ -5,6 +5,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from bs4 import BeautifulSoup
 import requests
+from time import time
 
 webrouter = APIRouter(prefix='/v1/web/api', tags=['web'])
 Cache_data = []
@@ -12,7 +13,7 @@ last_fetch = 0
 
 @webrouter.get("/news")
 def get_news(page:int=1,limit:int=5):
-    global Cache_data,time_left
+    global Cache_data
     url = "https://news.ycombinator.com/"   
     response = requests.get(url)
     soup = BeautifulSoup(response.text,"html.parser")

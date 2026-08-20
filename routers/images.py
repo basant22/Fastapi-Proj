@@ -17,7 +17,7 @@ if not os.path.exists(settings.UPLOAD_DIR):
 def upload_file(file:UploadFile = File(...)):
     filename = file.filename
     
-    file_path = os.path.join(UPLOAD_DIR,filename)
+    file_path = os.path.join(settings.UPLOAD_DIR,filename)
     
     if not filename:
         raise HTTPException( status_code=400,detail="File not found") 
@@ -40,7 +40,7 @@ def upload_file(file:UploadFile = File(...)):
 # get file
 @imagerouter.get("/file/{filename}")
 def get_file(filename:str):
-    file_path = os.path.join(UPLOAD_DIR,filename)
+    file_path = os.path.join(settings.UPLOAD_DIR,filename)
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404,detail="FFile not found")
     return{
