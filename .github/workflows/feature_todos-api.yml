@@ -53,7 +53,7 @@ jobs:
  deploy:
     needs: build
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/feature' && github.event_name == 'push'
 
     steps:
       # Download the pre-packaged app from the build job
