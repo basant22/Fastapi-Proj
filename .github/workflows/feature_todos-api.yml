@@ -69,12 +69,12 @@ jobs:
         uses: azure/login@v3
         with:
          auth-type: IDENTITY
-         client-id: ${{ secrets.AZURE_CLIENT_ID }} # Required for user-assigned identity
-         tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-         subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-        # client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_E9D68D78E97442D281F3F110AAEEDAA3 }}
-        # tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_60155983559D4888B7CE20EC2940B5C9 }}
-        # subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_BE10279745BC49389CAAE882B5D782B0 }}
+        #  client-id: ${{ secrets.AZURE_CLIENT_ID }} # Required for user-assigned identity
+        #  tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        #  subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_E9D68D78E97442D281F3F110AAEEDAA3 }}
+        tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_60155983559D4888B7CE20EC2940B5C9 }}
+        subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_BE10279745BC49389CAAE882B5D782B0 }}
 
       - name: 'Deploy to Azure Web App'
         uses: azure/webapps-deploy@v3
